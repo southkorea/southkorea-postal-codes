@@ -1,105 +1,55 @@
 # -*- coding: utf-8 -*-
 
-from itertools import imap
-import logging
 import sys
-
-import gevent
-from gevent import monkey; monkey.patch_all()
-from gevent.pool import Pool
-import requests
-
+import os
+import csv
+import re
+import glob
 from settings import *
 
+def read_txt():
+    for filename in glob.glob(os.path.join(SOURCE_PATH)):
+        with open(filename, 'r') as txt:
+            reader = csv.reader(txt, delimiter=SOURCE_DELIMITER, quotechar='"')
+            for row in reader:
+                yield row
 
-## Constants ###
-CODE_API_LIMIT_EXCEED = '41'
+def write_csv(wrangle=True):
+    with open(OUTPUT_PATH, 'wb') as output:
+        writer = csv.writer(output, delimiter=OUTPUT_DELIMITER, quotechar='"')
 
+        if wrangle:
+            writer.writerow(OUTPUT_HEADER)
+            for row in read_txt():
+                writer.writerow(wrangle_row(row))
+        else:
+            writer.writerow(SOURCE_HEADER)
+            for row in read_txt():
+                writer.writerow([encode(item) for item in row])
 
-def read_postal_addresses(inpath):
-    for line in open(inpath, 'r'):
-        postal_code, address = line.decode(SOURCE_ENCODING).strip().split(',', 1)
-        address = address.strip('"')
-        postal_code = '%s-%s' % (postal_code[:3], postal_code[3:])
-        yield (postal_code, address)
+def wrangle_row(row):
+    addr_old = "%s %s %s %s %d-%d %s" % (row[1].strip(), row[2].strip(), row[3].strip(), row[18].strip() if row[18] else row[4].strip(), int(row[6].strip()), int(row[7].strip()), row[25].strip())
+    addr_new = "%s %s %s %d-%d %s" % (row[1].strip(), row[2].strip(), row[9].strip(), int(row[11].strip()), int(row[12].strip()), row[25].strip())
+    postal_code = int(row[19])
 
+    # remove more than at least 2 spaces between words
+    addr_old = encode(' '.join(re.split(r'\{2,}', addr_old)))
+    addr_new = ' '.join(re.split(r'\{2,}', encode(addr_new)))
 
-def addr2coord(address):
-    url = API_URL + '&q=%s&output=json' % address
-    r = requests.get(url, headers=HEADERS)
-    response_data = r.json()
+    return [postal_code, addr_old, addr_new]
 
-    try:
-        items = response_data['channel']['item']
-    except:
-        if str(response_data['dcode']) == CODE_API_LIMIT_EXCEED:
-            logging.exception('API limit exceeded')
-            sys.exit(1)
-
-        raise Exception(response_data['dmessage'])
-
-    if not items:
-        raise Exception('Address not found: %s' % encode(address))
-
-    item = items[0]
-    return (item['title'], item['lat'], item['lng'])
-
-
-def get_latlng(postal_code, address, cache=None):
-    if cache and postal_code in cache:
-        return
-
-    latlng = cache.get(address) if cache else None
-    if not latlng:
-        try:
-            tup = addr2coord(address)
-        except Exception as e:
-            logging.exception(e.message)
-            print '%s,,' % postal_code
-            return
-
-        if address != tup[0]:
-            addr1, addr2 = map(encode, [address, tup[0]])
-            logging.warning('Addresses do not match: %s | %s' % (addr1, addr2))
-
-        latlng = (tup[1], tup[2])
-        if cache:
-            cache[address] = latlng
-
-    if cache:
-        cache[postal_code] = latlng
-
-    logging.info('Processed %s' % postal_code)
-    print '%s,%s,%s' % (postal_code, latlng[0], latlng[1])
-
-
-def encode(s, encoding=OUTPUT_ENCODING):
+def encode(s):
     if isinstance(s, unicode):
-        s = s.encode(encoding)
+        s = s.encode(OUTPUT_ENCODING)
     elif not isinstance(s, str):
         s = str(s)
+    else:
+        s = unicode(str(s), SOURCE_ENCODING).encode(OUTPUT_ENCODING)
     return s
 
+if __name__ == "__main__":
+    print'''
+    converting <*.txt> to <addresses.csv> ...
+    '''
 
-def main(inpath):
-    cache = {}
-    pool = Pool(POOL_SIZE)
-    jobs = [pool.spawn(get_latlng, postal_code, address, cache)
-            for postal_code, address in read_postal_addresses(inpath)]
-    gevent.joinall(jobs)
-
-
-def usage():
-    print '''%s <sourcefile>
-
-    sourcefile: csv file that contains (postal code, address) pairs.
-''' % __file__
-
-
-if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        usage()
-        sys.exit(1)
-
-    main(*sys.argv[1:])
-
+    write_csv()
